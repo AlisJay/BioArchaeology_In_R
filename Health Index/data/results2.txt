@@ -1,0 +1,2 @@
+"num" "HI" "QALY" "lifeEx" "Pyl" "Stature" "Hypoplasia" "Anemia" "Dental" "Infection" "DJD" "Trauma"
+11829 62.49 16.49 28.42 336125 28.6 53.96 59.93 78.79 69.83 73.19 73.15

@@ -1,0 +1,853 @@
+---
+title: "Health Index reconstruction"
+author: "A.J.Nicholson"
+output: pdf_document
+geometry: margin=1.5cm
+---
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+library(knitr)
+```
+
+#Introduction
+
+The purpose of this analysis is to create an approximation of the health Index calculation in code. With the view of creating a unifying function that can be applied to any dataset with the required elements. The reconstruction of the health index analysis process will be based upon the description given in chapter 3 of The backbone of history: health and nutrition in the western hemisphere. (Steckel & Rose, 2002). 
+
+The data used in this document is the output from the end of the "CorrectData.rmd". 
+
+```{r readData}
+cols<-read.table("data/cols.txt",colClasses="character");cols<-as.character(cols[2,])
+HIdata<-read.table("data/HIdata_c.txt",header=TRUE,colClasses=cols)
+```
+
+# Sampling
+
+I'm going to develop the code using a single population and then apply it back to the whole dataset. 
+
+```{r sites}
+kable(t(summary(HIdata$Site)[1:10]))# top 10 most populated
+```
+
+I need a population with a large number of observations to provide the best trouble shooting. So I will choose site 41D as my sample population. This sample comes from a cemetery in Dallas  dating to 62 BP. It should have 1157 individuals 613 of whom are over 5 and the ancestry should be African American (3).  
+
+```{r popA}
+PopA<-HIdata[HIdata$Site=="41D",]
+kable(data.frame(no=length(PopA$ID),noPlus5=(length(PopA$ID[PopA$Age>5]))))
+kable(t(summary(PopA$Ancestry)))
+```
+ 
+The ancestry and total number match what is reported Steckel & Rose but there are more individuals over 5 than reported. This will not stop me using this population but it is interesting to note the difference. 
+ 
+#Approach
+
+The health Index is created in a multi-stage process. That I shall break into 3 sections:
+
+1. Converting the recorded variables for each individual into scores. "for each individual, every observable attribute of the health index is scored on a scale of 0 to 100 percent"
+
+2. Create Age specific scores for each attribute.  This is an average of individuals scores, broken into age categories. For some attributes individuals contribute score for all age categories during their life; i.e. if they die at 30 and had a score of 50, they would contribute this same score for every age category up to and including the one containing 30. After this they contribute a score of zero. Other attributes only effect 10 years prior to death, before this period the individual would contribute a score of 100.
+
+3. Combining Age specific scores to produce a single index score for each attribute that is averaged to get the health index.  
+ 
+To aid in this process I'm going to create empty data frames that will be filled during each section. 
+
+```{r dataframes}
+D1<-data.frame(Individual=PopA$ID,Age=NA,B2D=NA,Ten=NA,Stature=NA,Hypoplasia=NA,
+               Anemia=NA,DentalHealth=NA,Infections=NA,DJD=NA,Trauma=NA)
+
+kable(D1[1:10,])# first 10 lines
+
+D2<-data.frame(Trait=c("Stature","Hypoplasia","Anemia","DentalHealth",
+                       "Infections","DJD","Trauma"),
+               contributors=NA,Age0_4=NA,Age5_14=NA,Age15_24=NA,Age25_34=NA,
+               Age35_44=NA,Age45=NA)
+
+kable(D2)
+
+HI<-data.frame(Pop=PopA$Site[1],HI=NA,QALY=NA,lifeEx=NA,pyl=NA,
+               Stature=NA,Hypoplasia=NA,Anemia=NA,Dental=NA,Infection=NA,DJD=NA,Trauma=NA)
+
+kable(HI)
+
+```
+
+
+# Section 1 Individual scores
+
+There are 7 potential attribute scores for each Individual:
+
+1. Stature
+
+2. Hypoplasia
+
+3. Anemia
+
+4. Dental Health
+
+5. Infection
+
+6. DJD
+
+7. Trauma
+
+## Age 
+
+Due to Known issues in the accuracy of ages calculated from skeletal remains the reported ages are corrected according to the method outlined in Lovejoy et al (1985).  This can be applied to the data set using the function below
+
+```{r lovejoyadj}
+LovejoyAdj<-function(age,info=FALSE){# age= numeric, info=logical
+  #info function provides details of the method used and reference
+  #default value= FALSE
+  if (info==TRUE){
+    output<-"Age at death estimations from skeletal remains have been show to be inaccurate. 
+    Specifically there is a tendency to underestimate, particularly in older individuals. 
+    This function adjusts reported age using the method outlined in lovejoy et al. (1985). 
+    The function takes a single numeric input. To apply to dataframe the following steps are required:
+    Dataframe$Adjusted<-NA
+    for(i in 1:length(Dataframe$Age)){Dataframe$Adjusted[i]<-LovejoyAdj(Dataframe$Age[i])}"
+    output<-strwrap(output)
+  }else{
+    if(is.na(age)){
+      output<-NA
+    }else{
+      if(age>=18 & age<30){
+        output<-age-1.4
+      }else{
+        if(age>=30 & age<40) {
+          output<-age+0.8
+        }else{
+          if(age>=40 & age<50){
+            output<-age+7.4
+          }else{
+            if(age>=50 & age<60){
+              output<-age+6.8
+            }else{
+              if(age>=60){
+                output<-age+13.6
+              }else{output<-age}}}}}}}
+  output}
+```
+
+```{r ageConversion}
+for(i in 1:length(D1$Age)){
+  D1$Age[D1$Individual==PopA$ID[i]]<-LovejoyAdj(PopA$Age[i])
+}
+```
+
+From these ages I need to calculate what period constitutes birth to death(B2D) and what is 10 year prior to death(Ten). These are the two time periods that the attributes are are considered to act over. The age groups used by Steckle and Rose are "0-4","5-14","15-24","25-34","35-44"and "45+". 
+
+B2D will record the last period (i.e. the last time that individual will contribute to the heath index)
+
+```{r b2d}
+for(i in 1:length(D1$Age)){
+  if(round(D1$Age[i])%in% 0:4){D1$B2D[i]<-1}
+  if(round(D1$Age[i])%in% 5:14){D1$B2D[i]<-2}
+  if(round(D1$Age[i])%in% 15:24){D1$B2D[i]<-3}
+  if(round(D1$Age[i])%in% 25:34){D1$B2D[i]<-4}
+  if(round(D1$Age[i])%in% 35:44){D1$B2D[i]<-5}
+  if(round(D1$Age[i])>= 45){D1$B2D[i]<-6}
+}
+```
+
+A Ten year period before death will either cover a one or two categories. So this is going to be a two digit number with lowest category coming first and 0 representing no category. 
+
+```{r ten}
+for(i in 1:length(D1$Age)){
+  if((round(D1$Age[i])<=4)& (round(D1$Age[i]-10)<=4)){D1$Ten[i]<-01}
+  if((round(D1$Age[i])%in% 5:14)& (round(D1$Age[i]-10)<=4)){D1$Ten[i]<-12}
+  if((round(D1$Age[i])%in% 15:24)& (round(D1$Age[i]-10)%in% 5:14)){D1$Ten[i]<-23}
+  if((round(D1$Age[i])%in% 25:34)& (round(D1$Age[i]-10)%in% 15:24)){D1$Ten[i]<-34}
+  if((round(D1$Age[i])%in% 35:44)& (round(D1$Age[i]-10)%in% 25:34)){D1$Ten[i]<-45}
+  if((round(D1$Age[i])>= 45)& (round(D1$Age[i]-10)%in% 35:44)){D1$Ten[i]<-56}
+  if((round(D1$Age[i])>=45)& (round(D1$Age[i]-10)>=45)){D1$Ten[i]<-60}
+}
+```
+
+```{r}
+kable(D1[1:10,])
+```
+
+##Stature
+
+In the original: 100 = attained or exceeded modern standard (Maresh, 1955), 0 if below  3 standard deviations and any where in-between is graded. I used Maresh(1970) values as reported in Schuer & Black, the standard deviation is estimated from given 10th and 90th percentiles (using z=(x-mean)/SD)
+
+```{r mareshRead}
+Maresh<-read.table("data/M70.txt",header=TRUE)
+kable(Maresh)
+```
+
+The Maresh data provides separate male and female values, as sub-adult in this sample are not sexed and average value has also been included. 
+
+I want to check the suitability of this as a reference guide. Firstly for Sub Adult remains. For this I will explore using the average values or the range between the minimum  possible values for a given age as reference values.   
+
+
+```{r mareshTest}
+stature<-HIdata[,c("Age","Sex","FLEN","FDIAP")]
+
+
+plot(Maresh$age,Maresh$AL,type="n",xlab="Age",ylab="femur diaphyseal length(mm)",
+     main="subadult comparison")
+points(stature$Age,stature$FDIAP,col="black",pch=20)
+lines(Maresh$age,Maresh$AL,col="green",lwd=2) 
+lines(Maresh$age,Maresh$A3SD,col="red",lwd=2) 
+
+MinL<-rep(NA,length(Maresh$AL));Min3SD<-rep(NA,length(Maresh$AL))
+for(i in 1:length(Maresh$age)){
+  MinL[i]<-min(Maresh$ML[i],Maresh$FL[i])
+  Min3SD[i]<-min(Maresh$M3SD[i],Maresh$F3SD[i])
+  }
+lines(Maresh$age,MinL,col="dark green",lwd=2) 
+lines(Maresh$age,Min3SD,col="dark red",lwd=2)
+legend("topleft",c("100(average)","0(average)","100(min)","0(min)"),
+       fill=c("green","red","dark green","dark red"),bg="white",title="Score")
+```
+
+Anything above the green line would score 100 and anything below the red line would score 0. The difference between the two possible ranges is negligible for the younger individuals but increase as age does.  
+
+For adult remains the final row of the Maresh data frame is used.
+
+```{r mareshAdult}
+kable(Maresh[20,])
+```
+
+For these individual the different male and female values can be used for those of known sex. For remains of unknown sex I will again compare the effect of using the minimum and average values. 
+
+
+```{r mareshTest2,fig.width=12}
+par(mfrow=c(1,3))
+hist(stature$FLEN[stature$Sex==1|stature$Sex==2 ],main="Female",xlab="Femur length(mm)")
+abline(v=Maresh$FL[20],col="green");abline(v=Maresh$F3SD[20],col="red")
+hist(stature$FLEN[stature$Sex==3|stature$Sex==4 ],main="male",xlab="Femur length(mm)")
+abline(v=Maresh$ML[20],col="green");abline(v=Maresh$M3SD[20],col="red")
+hist(stature$FLEN[stature$Sex==6|is.na(stature$Sex) ],main="Unknown",xlab="Femur length(mm)")
+abline(v=Maresh$AL[20],col="green");abline(v=Maresh$A3SD[20],col="red")
+abline(v=Maresh$FL[20],col="dark green");abline(v=Maresh$F3SD[20],col="dark red")
+```
+ 
+Ideally the center of the histograms should fall within the two lines. This is the case for the female remains and the unknown remains when using female value but not for the male remains; where there a large number of individuals that fall under the red (0 score) line.  So I shall explore alternative ranges on this data. 
+
+```{r mareshMale}
+hist(stature$FLEN[stature$Sex==3|stature$Sex==4 ],main="male",xlab="Femur length(mm)")
+abline(v=Maresh$ML[20],col="green",lty=2)
+abline(v=Maresh$M3SD[20],col="green",lty=2)
+abline(v=Maresh$AL[20],col="red",lty=2)
+abline(v=Maresh$A3SD[20],col="red",lty=2)
+abline(v=Maresh$FL[20],col="blue",lty=2)
+abline(v=Maresh$F3SD[20],col="blue",lty=2)
+legend("topright",c("male","average","female"),
+       fill=c("green","red","blue"))
+```
+
+The male range although most technically appropriate would lead to  a disproportionately large number of individuals score as 0. The female range similar would lead to more individuals than perhaps can be justified as being score as 100. 
+
+The range that seems to best fit the data is the average range. However there isn't a clear objective reason for using an average range. Particularly if minimum values are used for unknown data. I propose a compromise, I will continue to use the male value for the upper 100 score limit but lower the 0 score limit to the average value.  
+
+As a result of this suitability check I shall modify the reference database as such:
+
+```{r maresh2}
+Maresh2<-Maresh[,c("age","FL","F3SD","ML","M3SD")]
+Maresh2$M3SD<-Maresh$A3SD# lower male 0 score to average
+
+#replace the average values with minimum values to be used for unkown sex
+for(i in 1:length(Maresh$age)){
+  Maresh2$UL[i]<-min(Maresh$ML[i],Maresh$FL[i])
+  Maresh2$U3SD[i]<-min(Maresh$M3SD[i],Maresh$F3SD[i])
+  }
+
+kable(Maresh2)
+
+write.table(Maresh2,"data/Maresh.txt",row.names=FALSE)
+Maresh<-Maresh2
+```
+
+Now I shall begin to use this reference data to turn the femur lengths recorded into stature scores. Starting by creating a function to define the logical test at the heart of the assessment. 
+
+```{r statureLogic}
+StatureLogic<-function(x,A,B){# x = value, A=modern standard, B= 10th percentile
+if(x>=A){output<-100}# if reaches or exceeds modern standard 
+else{
+if(x<=B){output<-0}# if less than or equal to 1oth percentile
+else{output<-100-((A-x)/(A-B)*100)}# overwise graded score between 0 and 100
+}
+output
+}
+```
+
+This test then need to be applied using the appropriate reference data. The following function applies the test to an individual
+
+
+```{r stature}
+Stature<-function(femur,Age,Sex,Maresh){# reference data, femur length age and sex
+  if(anyNA(c(Age,femur))|round(Age) %in% 12:17){# age excluded in S&R 11.75-17.75
+    s<-NA
+  }else{
+    if(round(Age)>=18){# adult values 
+      if(Sex==6|is.na(Sex)){s<-StatureLogic(femur,Maresh$UL[Maresh$age==18],
+                                            Maresh$U3SD[Maresh$age==18])}#unknown sex
+      if(Sex==1|Sex==2){s<-StatureLogic(femur,Maresh$FL[Maresh$age==18],
+                                        Maresh$F3SD[Maresh$age==18])}#female
+	    if(Sex==3|Sex==4){s<-StatureLogic(femur,Maresh$ML[Maresh$age==18],
+                                        Maresh$M3SD[Maresh$age==18])}#male
+    }else{s<-StatureLogic(femur,Maresh$UL[which.min(abs(Maresh$age-Age))],
+                          Maresh$U3SD[which.min(abs(Maresh$age-Age))])}#juvenilles
+  }
+  round(s,digits=2)
+}
+```
+
+and the code below applies this function to the population
+
+```{r staturePop}
+for (i in 1:length(D1$Individual)){
+if(PopA$Age[i]>=18){
+  D1$Stature[D1$Individual==PopA$ID[i]]<-Stature(PopA$FLEN[i],
+                                                 PopA$Age[i],PopA$Sex[i],Maresh)
+}else{
+  D1$Stature[D1$Individual==PopA$ID[i]]<-Stature(PopA$FDIAP[i],PopA$Age[i],
+                                                 PopA$Sex[i],Maresh)}
+}
+summary(D1$Stature)
+hist(D1$Stature)
+```
+
+
+##Hypoplasia
+
+This is the first of series of categorical variables that can be dealt with in similar manners. For each category 1 equates to a score of 100 and the highest category a score of 0. The other categories are assigned scores that follow regular intervals determined by the number of categories. I.e. if there are 3 categories then the 2nd category scores 50 and if there are 4 categories it would score 67. 
+
+This basic idea is defined in the function below. 
+
+
+```{r Cat2Percent}
+Cat2Percent<-function(x,c){# value and number of categories
+ref<-data.frame(cat=c(0,1,2,3,4,5),two=c(NA,100,0,NA,NA,NA),three=c(NA,100,50,0,NA,NA),
+                four=c(NA,100,67,33,0,NA),five=c(NA,100,75,50,25,0))
+ref[ref$cat==x,c]
+}
+```
+
+There are four fields in the original dataset that correspond to linear enamel hypoplasia, each of which has 3 categories. The lowest score from these 4 categories becomes the hypoplasia score. 
+
+
+```{r hypoplasia}
+for(i in 1:length(PopA[,1])){
+x<-c(Cat2Percent(PopA$LDI[i],3),Cat2Percent(PopA$LDC[i],3), 
+     Cat2Percent(PopA$LPI[i],3),Cat2Percent(PopA$LPC[i],3))
+if(sum(is.na(x))==length(x)){D1$Hypoplasia[D1$Individual==PopA$ID[i]]<-NA}# if all NA's
+else{D1$Hypoplasia[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+}
+
+summary(D1$Hypoplasia)
+hist(D1$Hypoplasia)
+```
+
+## Anemia
+
+Like hypoplasia this is a categorical variable in which the lowest score counts. 
+
+```{r anemia}
+for(i in 1:length(PopA[,1])){
+x<-c(Cat2Percent(PopA$CROB[i],3),Cat2Percent(PopA$PORHY[i],2))
+if(sum(is.na(x))==length(x)){D1$Anemia[D1$Individual==PopA$ID[i]]<-NA}
+else{D1$Anemia[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+}
+
+summary(D1$Anemia)
+hist(D1$Anemia)
+```
+
+##Dental health
+
+This has two weighted components completeness(75%) and abscesses (25%). 
+
+Completeness is defined as 1-((Antemortem loss + cavities)/(antemortem loss+teeth present)).For the abscess score 100= no abscesses, 50= one abscess and 0= more than one abscess.
+
+There is an additional consideration for this measure; if the number of teeth recorded (SUMTET + SUMPRE) is less than 8 then you cannot score the attribute. 
+
+```{r DentalHealth}
+DentalHealth<-function(SUMTET,SUMPRE,SUMCAV,SUMABS){
+x<-c(SUMTET,SUMPRE,SUMCAV,SUMABS)
+if(sum(is.na(x))>0|SUMTET+SUMPRE<8){DH<-NA}
+else{
+completeness<-1-((SUMPRE+SUMCAV)/(SUMPRE+SUMTET))
+if(SUMABS==0){Abscess<-1}
+if(SUMABS==1){Abscess<-0.5}
+if(SUMABS>1){Abscess<-0}
+DH<-(completeness*75)+(Abscess*25)
+}
+round(DH,digits=2)
+}
+
+```
+
+```{r DentalHealth2}
+for(i in 1:length(PopA[,1])){
+D1$DentalHealth[D1$Individual==PopA$ID[i]]<-DentalHealth(PopA$SUMTET[i],PopA$SUMPRE[i],
+                                                         PopA$SUMCAV[i],PopA$SUMABS[i])
+}
+
+summary(D1$DentalHealth)
+hist(D1$DentalHealth)
+```
+
+## Infection
+
+This is another attribute based on categorical variables. 
+
+```{r infection}
+for(i in 1:length(PopA[,1])){
+x<-c(Cat2Percent(PopA$SKELINF[i],3),Cat2Percent(PopA$TIBINF[i],4))
+if(sum(is.na(x))==length(x)){D1$Infections[D1$Individual==PopA$ID[i]]<-NA}
+else{D1$Infections[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+}
+
+summary(D1$Infections)
+hist(D1$Infections)
+```
+
+##DJD
+
+The Degenerative joint disease attribute score is the lowest score of from 8 variables:DJSH,DJHK,DJCER,DJTHO,DJLUM,DJTMJ,DJWR and DJHAN. 
+
+
+```{r DJD}
+for(i in 1:length(PopA[,1])){
+x<-c(Cat2Percent(PopA$DJSH[i],5),Cat2Percent(PopA$DJHK[i],5),Cat2Percent(PopA$DJCER[i],4),
+     Cat2Percent(PopA$DJTHO[i],4),Cat2Percent(PopA$DJLUM[i],4),Cat2Percent(PopA$DJTMJ[i],2),
+     Cat2Percent(PopA$DJWR[i],2),Cat2Percent(PopA$DJHAN[i],2))
+if(sum(is.na(x))==length(x)){D1$DJD[D1$Individual==PopA$ID[i]]<-NA}
+else{D1$DJD[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+}
+
+summary(D1$DJD)
+hist(D1$DJD)
+```
+
+##Trauma 
+
+This is also recorded in categorical variables but it is scored differently. An individual receives 100 if trauma is absent and 0 if there is trauma on any part.
+
+```{r Trauma}
+Fact2Num<- function(x){
+  a<-as.character(x)
+  a<-as.numeric(a)
+  a
+}
+
+PopA[,39:45]<-apply(PopA[,39:45],2,FUN=Fact2Num)
+for(i in 1:length(PopA[,1])){
+  if(PopA$TRARM[i]>1|PopA$TRLEG[i]>1|PopA$TRNAS[i]>1|PopA$TRFAC[i]>1|PopA$TRSKUL[i]>1|
+       PopA$TRHAN[i]>1|PopA$TRWEAP[i]>1){# if any trauma
+    
+    D1$Trauma[D1$Individual==PopA$ID[i]]<-0
+    
+    }else{
+      if(sum(c(PopA$TRARM[i],PopA$TRLEG[i],PopA$TRNAS[i],PopA$TRFAC[i],PopA$TRSKUL[i],
+               PopA$TRHAN[i],PopA$TRWEAP[i]),na.rm=TRUE)==0){#if all unrecorded
+        
+        D1$Trauma[D1$Individual==PopA$ID[i]]<-NA
+        
+        }else{D1$Trauma[D1$Individual==PopA$ID[i]]<-100}# otherwise trauma =100
+      }}
+
+summary(D1$Trauma)
+hist(D1$Trauma)
+```
+
+#Section 2: Age Specific score. 
+
+For each attribute I will calculate the total score at each age and the number of contributors to that score.
+
+For this section the attributes can be divided into 2 groups: 
+
+1. Stature, anemia and hypoplasia. These are considered to take effect from birth to death. This means any contributor (any individual without an NA for that attribute) will add their score to the  every age category which they are alive during.  
+
+2.Everything else effects a ten year period prior to death. The contributors score is added to the total for the age categories that represent this period. Prior to this period(from birth to 10 years before death) any contributor will add a score of 100 to the total. As with the previous group an individual stops contributing on their death. 
+
+DJD and dental health which fall in the second group have to additional caveat that they are not considered to effect an individual below 18 years old. 
+
+## Birth to death
+
+```{r B2DTotal}
+B2DTotal<-function(D1,D2,D2row,D1column){#D2row & D1 Column= number
+D2$contributors[D2row]<-length(D1[!(is.na(D1[,D1column])),D1column])
+if(D2$contributors[D2row]==0){D2<-D2}# if no contributors don't change 
+else{
+D2$Age0_4[D2row]<-sum(D1[,D1column],na.rm=TRUE)# everyone who can contributes to the first age period
+D2$Age5_14[D2row]<-sum(D1[D1$B2D %in% 2:6,D1column],na.rm=TRUE)#everyone not dead
+D2$Age15_24[D2row]<-sum(D1[D1$B2D %in% 3:6,D1column],na.rm=TRUE)
+D2$Age25_34[D2row]<-sum(D1[D1$B2D %in% 4:6,D1column],na.rm=TRUE)
+D2$Age35_44[D2row]<-sum(D1[D1$B2D %in% 5:6,D1column],na.rm=TRUE)
+D2$Age45[D2row]<-sum(D1[D1$B2D==6,D1column],na.rm=TRUE)
+}
+D2
+}
+```
+
+```{r B2DTotal2}
+D2<-B2DTotal(D1,D2,D2row=1,D1column=5)# stature
+D2<-B2DTotal(D1,D2,D2row=2,D1column=6)# Hypoplasia
+D2<-B2DTotal(D1,D2,D2row=3,D1column=7)# anemia
+
+kable(D2[1:3,])
+```
+
+## Ten years prior to death (part 1)
+
+Trauma and infection have an effect over a 10 year period prior to death, with no restrictions.
+
+```{r TenTotal}
+TenTotal<-function(D1,D2,D2row,D1column){
+D2$contributors[D2row]<-length(D1[!(is.na(D1[,D1column])),D1column])
+D1<- D1[!(is.na(D1[,D1column])),]
+if(D2$contributors[D2row]==0){D2<-D2# if no contributors don't change
+}else{
+  # pattern: a-b+c
+  #a=100* number of contributors
+  #b=100* number of dead and those who's ten years include that period
+  #c=sum of scores of those whos ten years include that period
+D2$Age0_4[D2row]<-(100*D2$contributors[D2row])-
+  (100*length(D1[D1$Ten %in% c(01,12),D1column]))+
+  sum(D1[D1$Ten %in% c(01,12),D1column])
+
+D2$Age5_14[D2row]<-(100*D2$contributors[D2row])-
+  (100*length(D1[D1$Ten %in% c(01,12,23),D1column]))+
+  sum(D1[D1$Ten %in% c(12,23),D1column])
+
+D2$Age15_24[D2row]<-(100*D2$contributors[D2row])-
+  (100*length(D1[D1$Ten %in% c(01,12,23,34),D1column]))+
+  sum(D1[D1$Ten %in% c(23,34),D1column])
+
+D2$Age25_34[D2row]<-(100*D2$contributors[D2row])-
+  (100*length(D1[D1$Ten %in% c(01,12,23,34,45),D1column]))+
+  sum(D1[D1$Ten %in% c(34,45),D1column])
+
+D2$Age35_44[D2row]<-(100*D2$contributors[D2row])-
+  (100*length(D1[D1$Ten %in% c(01,12,23,34,45,56),D1column]))+
+  sum(D1[D1$Ten %in% c(45,56),D1column])
+
+D2$Age45[D2row]<-sum(D1[D1$Ten %in% c(56,60),D1column])
+}
+D2
+}
+```
+
+```{r tentotal}
+D2<-TenTotal(D1,D2,D2row=5,D1column=9)# infection
+D2<-TenTotal(D1,D2,D2row=7,D1column=11)# Trauma
+kable(D2[c(5,7),])
+```
+
+##Ten years prior to death (part 2)
+
+DJD and Dental health also effect a period 10 years prior to death but are not considered to effect anyone under 18. There for the code above need to be adjusted slightly so that the first two age category (0 to 4 and 5 to 14) calculations do not include the contributor section of the equation.   
+
+
+```{r TenTotal2}
+TenTotal2<-function(D1,D2,D2row,D1column){
+  D2$contributors[D2row]<-length(D1[!(is.na(D1[,D1column])),D1column])
+  D1<- D1[!(is.na(D1[,D1column])),]
+  if(D2$contributors[D2row]==0){D2<-D2
+  }else{
+    D2$Age0_4[D2row]<-(100*D2$contributors[D2row])
+    
+    D2$Age5_14[D2row]<-(100*D2$contributors[D2row])-
+      (100*length(D1[D1$Ten %in% c(01),D1column]))
+    
+    D2$Age15_24[D2row]<-(100*D2$contributors[D2row])-
+      (100*length(D1[D1$Ten %in% c(01,12,23,34),D1column]))+
+      sum(D1[D1$Ten %in% c(23,34),D1column])
+    
+    D2$Age25_34[D2row]<-(100*D2$contributors[D2row])-
+      (100*length(D1[D1$Ten %in% c(01,12,23,34,45),D1column]))+
+      sum(D1[D1$Ten %in% c(34,45),D1column])
+    
+    D2$Age35_44[D2row]<-(100*D2$contributors[D2row])-
+      (100*length(D1[D1$Ten %in% c(01,12,23,34,45,56),D1column]))+
+      sum(D1[D1$Ten %in% c(45,56),D1column])
+    
+    D2$Age45[D2row]<-sum(D1[D1$Ten %in% c(56,60),D1column])
+  }
+  D2
+}
+```
+
+```{r tentotal2}
+D2<-TenTotal2(D1,D2,D2row=4,D1column=8)# DentalHealth
+
+D2<-TenTotal2(D1,D2,D2row=6,D1column=10)# DJD
+
+kable(D2[c(4,6),])
+```
+
+## Average age score
+
+Currently the D2 data frame contains total attribute scores for each age category. To turn these into average scores they need to be divided by the number of contributors for that attribute.
+
+```{r avAge}
+D3<-D2
+D3[,3:8]<-D2[,3:8]/D2[,2]
+
+kable(D3)
+```
+
+```{r attributePlot}
+plot(1:7,rep(100,7),ylim=c(0,100),ylab="Score",xlab="Age cateogory",xaxt="n",type="n",main="Attribute score by age")
+axis(1,at=1:6,labels=c("0-4","5-14","15-24","25-34","35-44","45+"))
+colours<-c("indianred","cadetblue","seagreen","tan","orchid","orange","navy")
+lines(1:6,D3[1,3:8],col=colours[1]);lines(1:6,D3[2,3:8],col=colours[2])
+lines(1:6,D3[3,3:8],col=colours[3]);lines(1:6,D3[4,3:8],col=colours[4])
+lines(1:6,D3[5,3:8],col=colours[5]);lines(1:6,D3[6,3:8],col=colours[6])
+lines(1:6,D3[7,3:8],col=colours[7])
+legend("topright",legend=D3$Trait,fill=colours,bg="white")
+```
+
+#Section 3 creating the index.
+
+##Average attribute score
+
+The first step in calculating is creating a single average score for each attribute. This is done by multiplying each age specific rate by the person-years lived in each age category in the reference population summing then dividing by life expectancy at birth.  
+
+Although a life expectancy is given for the reference population I can find no person-years lived data in S&R so I am going to estimate both of these quantities from the population. 
+
+```{r PYL}
+PYL<-function(D1){# uses info in D1 database to calculate the person years live in each age category
+  pyl<-data.frame(age=c("0_4","5_14","15_24","25_34","35_44","45+"),pyl=NA)
+  #pyl= (number of years in period x number of people who survived till the end)
+  #+(the years lived during that period by those who died in that period)
+  pyl$pyl[1]<-(4*length(D1$Age[D1$B2D!=1]))+sum(D1$Age[D1$B2D==1])# 0-4
+  pyl$pyl[2]<-(10*length(D1$Age[D1$B2D %in% 3:6]))+sum((D1$Age[D1$B2D==2]-5))#(-5= years before)
+  pyl$pyl[3]<-(10*length(D1$Age[D1$B2D %in% 4:6]))+sum((D1$Age[D1$B2D==3]-15))
+  pyl$pyl[4]<-(10*length(D1$Age[D1$B2D %in% 5:6]))+sum((D1$Age[D1$B2D==4]-25))
+  pyl$pyl[5]<-(10*length(D1$Age[D1$B2D %in% 6]))+sum((D1$Age[D1$B2D==5]-35))
+  pyl$pyl[6]<-sum((D1$Age[D1$B2D==6]-44))
+  # n.b. no survivors in last period everyone who isn't already dead must die during this period
+  pyl$Averagepyl<-pyl$pyl/length(D1$Age)# number of years lived in the category by the average person
+  pyl
+  
+}
+```
+
+```{r PYL2}
+pyl<-PYL(D1)
+kable(pyl)
+```
+
+from this an approximation of life expectancy can be calculated by summing the averagepyl column
+
+```{r lifeEx}
+HI$lifeEx<-sum(pyl$Averagepyl)
+HI$pyl<-sum(pyl$pyl)
+```
+
+For this population that gives a life expectancy value of `r HI$lifeEx`. This and the averagepyl values can be used to calculate the average attribute scores 
+
+
+```{r averageAttribute}
+for(i in 1:7){
+  D3$AverageScore[i]<-sum(D3[i,3:8]*pyl$Averagepyl)/HI$lifeEx
+}
+
+HI[,6:12]<-D3$AverageScore
+kable(HI[,6:12])
+```
+
+
+
+```{r}
+plot(1:7,rep(100,7),ylim=c(0,100),ylab="Score",xlab="Age cateogory",xaxt="n",type="n",main="Attribute scores (by age and average)")
+axis(1,at=1:6,labels=c("0-4","5-14","15-24","25-34","35-44","45+"))
+
+abline(h=D3$AverageScore[1],col=colours[1],lty=2);abline(h=D3$AverageScore[2],col=colours[2],lty=2)
+abline(h=D3$AverageScore[3],col=colours[3],lty=2);abline(h=D3$AverageScore[4],col=colours[4],lty=2)
+abline(h=D3$AverageScore[5],col=colours[5],lty=2);abline(h=D3$AverageScore[6],col=colours[6],lty=2)
+abline(h=D3$AverageScore[7],col=colours[7],lty=2)
+
+lines(1:6,D3[1,3:8],col=colours[1],lwd=2);lines(1:6,D3[2,3:8],col=colours[2],lwd=2)
+lines(1:6,D3[3,3:8],col=colours[3],lwd=2);lines(1:6,D3[4,3:8],col=colours[4],lwd=2)
+lines(1:6,D3[5,3:8],col=colours[5],lwd=2);lines(1:6,D3[6,3:8],col=colours[6],lwd=2)
+lines(1:6,D3[7,3:8],col=colours[7],lwd=2)
+
+legend("topright",legend=D3$Trait,fill=colours,bg="white")
+```
+
+## Health Index
+
+The health index is a simple average of these average attribute scores.
+
+```{r HI}
+HI$HI<-mean(D3$AverageScore)
+```
+
+This gives a value of `r HI$HI`. 
+
+This should be times by the life expectancy in the reference population(26.38) to get the comparable quality adjusted life years. 
+
+```{r QALY}
+HI$QALY<-26.38*(HI$HI/100)
+HI<-round(HI[,sapply(HI, is.numeric)],2)
+kable(HI)
+```
+
+# Appendix: Application to multiple populations 
+
+The code above can be distilled into the following function for calculating the health index on a single population:
+
+```{r HealthIndex,eval=FALSE}
+HealthIndex<-function(Pop){
+  # pop= dataframe with Info for a single population
+
+#source functions/ data
+source('HIfunctions.R')# file containing all functions used e.g Fact2Num,Stature ect.
+Maresh<-read.table("data/Maresh.txt",header=TRUE)
+
+#adjust input dataframe
+PopA<-Pop[!(is.na(Pop$Age)),]#rm observations without age
+PopA[,39:45]<-apply(PopA[,39:45],2,FUN=Fact2Num)# change trauma field to factors
+
+#set up empty data sets
+D1<-data.frame(Individual=PopA$ID,Age=NA,B2D=NA,Ten=NA,Stature=NA,Hypoplasia=NA,
+               Anemia=NA,DentalHealth=NA,Infections=NA,DJD=NA,Trauma=NA)
+
+D2<-data.frame(Trait=c("Stature","Hypoplasia","Anemia","DentalHealth",
+                       "Infections","DJD","Trauma"),
+               contributors=NA,Age0_4=NA,Age5_14=NA,Age15_24=NA,Age25_34=NA,
+               Age35_44=NA,Age45=NA)
+
+HI<-data.frame(Pop=PopA$Site[1],num=length(PopA$Age),HI=NA,QALY=NA,lifeEx=NA,Pyl=NA,
+               Stature=NA,Hypoplasia=NA,Anemia=NA,Dental=NA,Infection=NA,DJD=NA,Trauma=NA)
+#added num to HI dataframe, number of individuals recorded (with an age)
+
+#filling D1
+for(i in 1:length(D1$Individual)){
+  #Age
+  D1$Age[D1$Individual==PopA$ID[i]]<-round(LovejoyAdj(PopA$Age[i]))# move rounding age to earlier in code
+  
+  #B2D
+  if(D1$Age[i]%in% 0:4){D1$B2D[i]<-1}
+  if(D1$Age[i]%in% 5:14){D1$B2D[i]<-2}
+  if(D1$Age[i]%in% 15:24){D1$B2D[i]<-3}
+  if(D1$Age[i]%in% 25:34){D1$B2D[i]<-4}
+  if(D1$Age[i]%in% 35:44){D1$B2D[i]<-5}
+  if(D1$Age[i]>= 45){D1$B2D[i]<-6}
+  
+  #Ten
+  if((D1$Age[i]<=4)& (D1$Age[i]-10<=4)){D1$Ten[i]<-01}
+  if((D1$Age[i]%in% 5:14)& ((D1$Age[i]-10)<=4)){D1$Ten[i]<-12}
+  if((D1$Age[i]%in% 15:24)& ((D1$Age[i]-10)%in% 5:14)){D1$Ten[i]<-23}
+  if((D1$Age[i]%in% 25:34)& ((D1$Age[i]-10)%in% 15:24)){D1$Ten[i]<-34}
+  if((D1$Age[i]%in% 35:44)& ((D1$Age[i]-10)%in% 25:34)){D1$Ten[i]<-45}
+  if((D1$Age[i]>= 45)& ((D1$Age[i]-10)%in% 35:44)){D1$Ten[i]<-56}
+  if((D1$Age[i]>=45)& ((D1$Age[i]-10)>=45)){D1$Ten[i]<-60}
+  
+  #Stature
+  if(PopA$Age[i]>=18){
+    D1$Stature[D1$Individual==PopA$ID[i]]<-Stature(PopA$FLEN[i],
+                                                   PopA$Age[i],PopA$Sex[i],Maresh)
+  }else{
+    D1$Stature[D1$Individual==PopA$ID[i]]<-Stature(PopA$FDIAP[i],PopA$Age[i],
+                                                   PopA$Sex[i],Maresh)}
+  
+  #hypoplasia
+  x<-c(Cat2Percent(PopA$LDI[i],3),Cat2Percent(PopA$LDC[i],3),
+       Cat2Percent(PopA$LPI[i],3),Cat2Percent(PopA$LPC[i],3))
+  if(sum(is.na(x))==length(x)){D1$Hypoplasia[D1$Individual==PopA$ID[i]]<-NA
+  }else{D1$Hypoplasia[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+  
+  #Anemia
+  x<-c(Cat2Percent(PopA$CROB[i],3),Cat2Percent(PopA$PORHY[i],2))
+  if(sum(is.na(x))==length(x)){D1$Anemia[D1$Individual==PopA$ID[i]]<-NA
+  }else{D1$Anemia[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+  
+  #DentalHealth
+  D1$DentalHealth[D1$Individual==PopA$ID[i]]<-DentalHealth(PopA$SUMTET[i],PopA$SUMPRE[i],
+                                                           PopA$SUMCAV[i],PopA$SUMABS[i])
+  
+  #Infections
+  x<-c(Cat2Percent(PopA$SKELINF[i],3),Cat2Percent(PopA$TIBINF[i],4))
+  if(sum(is.na(x))==length(x)){D1$Infections[D1$Individual==PopA$ID[i]]<-NA
+  }else{D1$Infections[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+  
+  #DJD
+  x<-c(Cat2Percent(PopA$DJSH[i],5),Cat2Percent(PopA$DJHK[i],5),Cat2Percent(PopA$DJCER[i],4),
+       Cat2Percent(PopA$DJTHO[i],4),Cat2Percent(PopA$DJLUM[i],4),Cat2Percent(PopA$DJTMJ[i],2),
+       Cat2Percent(PopA$DJWR[i],2),Cat2Percent(PopA$DJHAN[i],2))
+  if(sum(is.na(x))==length(x)){D1$DJD[D1$Individual==PopA$ID[i]]<-NA
+  }else{D1$DJD[D1$Individual==PopA$ID[i]]<-min(x,na.rm=TRUE)}
+  
+  #Trauma
+  if(PopA$TRARM[i]>1|PopA$TRLEG[i]>1|PopA$TRNAS[i]>1|PopA$TRFAC[i]>1|PopA$TRSKUL[i]>1|
+       PopA$TRHAN[i]>1|PopA$TRWEAP[i]>1){
+  D1$Trauma[D1$Individual==PopA$ID[i]]<-0
+  }else{
+    if(sum(c(PopA$TRARM[i],PopA$TRLEG[i],PopA$TRNAS[i],PopA$TRFAC[i],PopA$TRSKUL[i],
+             PopA$TRHAN[i],PopA$TRWEAP[i]),na.rm=TRUE)==0){
+      D1$Trauma[D1$Individual==PopA$ID[i]]<-NA
+    }else{D1$Trauma[D1$Individual==PopA$ID[i]]<-100}}
+}
+
+#filling in D2
+D2<-B2DTotal(D1,D2,D2row=1,D1column=5)# stature
+D2<-B2DTotal(D1,D2,D2row=2,D1column=6)# Hypoplasia
+D2<-B2DTotal(D1,D2,D2row=3,D1column=7)# anemia
+D2<-TenTotal(D1,D2,D2row=5,D1column=9)# infection
+D2<-TenTotal(D1,D2,D2row=7,D1column=11)# Trauma
+D2<-TenTotal2(D1,D2,D2row=4,D1column=8)# DentalHealth
+D2<-TenTotal2(D1,D2,D2row=6,D1column=10)# DJD
+D2[,3:8]<-D2[,3:8]/D2[,2]
+
+#Filling HI
+pyl<-PYL(D1)
+HI$lifeEx<-sum(pyl$Averagepyl)
+HI$Pyl<-sum(pyl$pyl)
+for(i in 1:7){
+  if(D2$contributors[i]==0){D2$AverageScore[i]<-NA}
+  else{D2$AverageScore[i]<-sum(D2[i,3:8]*pyl$Averagepyl,na.rm=TRUE)/HI$lifeEx}
+}
+HI[7:13]<-D2$AverageScore
+HI$HI<-mean(D2$AverageScore,na.rm=TRUE)
+HI$QALY<-26.38*(HI$HI/100)
+HI<-round(HI[,sapply(HI, is.numeric)],2)
+
+#return HI dataset
+HI
+}
+```
+
+To apply this is the whole Health Index dataset the following function is used: 
+
+```{r MultiHI,eval=FALSE}
+MultiHI<-function(x){
+  x<-x[!(is.na(x$Age)),]#rm no age
+  x<-split(x,x$Site)#split by site, this will create a list of dataframes
+  x<-Filter(function(x)length(x[,1])>0,x)# rm empty dataframes
+  x<-lapply(x,FUN=HealthIndex)#apply function to the list
+  x<-do.call("rbind",x)#joins output into single dataframe
+  x<-x[order(-x$HI),]# orders by Health Index
+  x
+}
+````
+
+This has been appied to the corrected health index data and the following results were produced:
+
+```{r}
+Results<-read.table("data/results.txt",header=TRUE)
+```
+
+The top populations with 100% result from small numbers of individuals, incomplete data and an absence of evidence of "abnormality". 
+
+
+```{r}
+kable(Results[1:10,])
+```
+
+Because of this issue I have remove all populations with 10 or less contributors from the following table. The first table is the result of running HealthIndex() on the whole Health Index dataset; i.e. it the result you would get if all the data were from a single population.
+
+
+```{r}
+Results<-Results[Results$num>10,]
+Results2<-read.table("data/results2.txt",header=TRUE)
+kable(Results2)
+kable(Results)
+```
+
+
+

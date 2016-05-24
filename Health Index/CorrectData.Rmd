@@ -1,0 +1,288 @@
+---
+title: "Correction of health index data"
+author: "A.J.Nicholson"
+output: pdf_document
+geometry: margin=1.5cm
+---
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+library(knitr)
+```
+
+#Introduction
+
+This documents record corrections made to the Health Index data in light of the issues discovered in  "ExploratoryAnalysis.rmd".
+
+```{r}
+cols<-read.table("data/cols.txt",colClasses="character");cols<-as.character(cols[2,])
+HIdata_new<-read.table("data/HIdata.txt",header=TRUE,colClasses=cols)
+Issues<-read.table("data/Issues.txt",header=TRUE)
+levels(Issues$issue)
+```
+
+
+In addition to these the problem of NA values in the categorical variables will be addressed. 
+
+#1. Not sex 5 
+
+These are individuals categorized as sex group 5 (Sex is undetermined because juvenile) that aren't juvenile. it Will correct by changing ID to 6 (Unknown). 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Not sex 5"]
+HIdata_new$Sex[HIdata_new$cID %in% IDs]<-"6"
+```
+
+#2. Too young to sex
+
+Juveniles, according to the age range, but have be sexed. Correct by putting in to sex class 5.
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="too young to sex"]
+HIdata_new$Sex[HIdata_new$cID %in% IDs]<-"5"
+
+```
+
+#3. MaxAge lower than MinAge
+
+This is where the max and min are the wrong way around.  Fixed by switching values
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="MaxAge lower than MinAge"]
+HIdata_new[HIdata_new$cID %in% IDs,c("MinAge","MaxAge")]<-HIdata_new[HIdata_new$cID %in% IDs,c("MaxAge","MinAge")]
+```
+
+#4. Max and Min but no Age
+
+Minimum (MinAge) and maximum (MaxAge) ages are recorded but not Age.  I Will use the average of min and max as an approximation of Age
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Max and Min but no Age"]
+HIdata_new$Age[HIdata_new$cID %in% IDs]<-(HIdata_new$MaxAge[HIdata_new$cID %in% IDs]+HIdata_new$MinAge[HIdata_new$cID %in% IDs])/2
+
+```
+
+# 5. Age outside age range
+
+The problem is that the age given is outside the age range (MinAge to MaxAge). Corrected by replacing Age with the average of MinAge and MaxAge.
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="age outside age range"]
+HIdata_new$Age[HIdata_new$cID %in% IDs]<-(HIdata_new$MaxAge[HIdata_new$cID %in% IDs]+HIdata_new$MinAge[HIdata_new$cID %in% IDs])/2
+```
+
+#6.  Min and Max age should be NA
+
+These are cases where the min and max are recorded as 0 as a substitute for missing values. Fixed by replacing with NA
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Min and Max age should be NA"]
+HIdata_new[HIdata_new$cID %in% IDs,c("MinAge","MaxAge")]<-NA
+```
+
+#7.:Non Juvenile femoral diaphysis
+
+Problem: femoral diaphysis length is growth measure in juveniles where the epiphysis haven't full fused, can't record for adult remains. Solved by replacing the value in FDIAP with NA
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Non Juvenile femoral diaphysis"]
+HIdata_new$FDIAP[HIdata_new$cID %in% IDs]<-NA
+```
+
+
+#9. SUMTET+SUMPRE >32
+
+This is where the number of teeth lost antemortem (so can't have been recovered) plus the total teeth recorded is more than 32. In these case the difference is so great (there are far too many teeth) that recalculating one or other value isn't a reasonable approach;  so the issue is fixed by changing SUMPRE to NA 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="SUMTET+SUMPRE >32"]
+HIdata_new$SUMPRE[HIdata_new$cID %in% IDs]<-NA
+```
+
+#10. Cavities but no teeth
+
+This is where cavities have been recorded but the total number of teeth observed hasn't (i.e. no SUMTET). This is corrected by estimating SUMTET to be 32-SUMPRE
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Cavities but no teeth"]
+HIdata_new$SUMTET[HIdata_new$cID %in% IDs]<-32-HIdata_new$SUMPRE[HIdata_new$cID %in% IDs]
+```
+
+#11. 33 sockets
+
+33 sockets have been recorded (in SUMSOK) instead of 32. Corrected by replacing 33 with 32. 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="33 sockets"]
+HIdata_new$SUMSOK[HIdata_new$cID %in% IDs]<-32
+```
+
+#12. Single digit social code 
+
+The social code (SOC) should be a three digit number but is recorded as "1" in a number of records. This is fixed by replacing 1 with 111 (code for an undifferentiated society or one with no evidence of differentiation)
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Single digit social code"]
+HIdata_new$SOC[HIdata_new$cID %in% IDs]<-111
+```
+
+#13. Erroneous Cavities
+
+These are cavities recorded without teeth (SUMTET=0 and SUMPRE(antemortem loss)=32).Fixed by changing SUMCAV to NA
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Erroneous Cavities"]
+HIdata_new$SUMCAV[HIdata_new$cID %in% IDs]<-NA
+```
+
+#14.  SUMPRE miscounted
+
+This is where the number of teeth lost antemortem plus the total teeth recorded is more than 32, but the difference is small so could be miscounting. solution = changing SUMPRE to 32-SUMTET.
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="SUMPRE miscounted"]
+HIdata_new$SUMPRE[HIdata_new$cID %in% IDs]<-32-HIdata_new$SUMTET[HIdata_new$cID %in% IDs]
+```
+
+#15. Abscesses should be NA
+
+This is where Abscesses have been recorded but not the number of sockets observed(SUMSOK) for these there is no way of estimating SUMSOK so the only solution is to change SUMABS to NA. 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Abscesses should be NA"]
+HIdata_new$SUMABS[HIdata_new$cID %in% IDs]<-NA
+```
+
+#16.  No sockets but Abscesses
+
+As the previous issue  Abscesses have been recorded but not the number of sockets observed(SUMSOK). In this case the SUMSOK can be estimated by taking the number of teeth lost antemortem (SUMPRE) from 32. 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="No sockets but Abscesses"]
+HIdata_new$SUMSOK[HIdata_new$cID %in% IDs]<-32-HIdata_new$SUMPRE[HIdata_new$cID %in% IDs]
+```
+
+#17. Non-juvenile deciduous teeth
+
+Linear enamel hypoplasia recorded for Decidous canines from adult remains. Change LDC to 0 to correct. 
+
+```{r}
+IDs<-Issues$ID[Issues$issue=="Non-juvenile deciduous teeth"]
+HIdata_new$LDC[HIdata_new$cID %in% IDs]<-0
+```
+
+#18. NA value in category variable
+
+For category variable the codebook defines 0 as un-recordable(or similar) so there shouldn't be any NA's.  To fix this i will cycle through all these columns and replace NA with 0. 
+
+```{r}
+#Hypoplasia
+HIdata_new$LDI[is.na(HIdata_new$LDI)]<-0;HIdata_new$LDC[is.na(HIdata_new$LDC)]<-0
+HIdata_new$LPI[is.na(HIdata_new$LPI)]<-0;HIdata_new$LPC[is.na(HIdata_new$LPC)]<-0
+#Anemia
+HIdata_new$CROB[is.na(HIdata_new$CROB)]<-0;HIdata_new$PORHY[is.na(HIdata_new$PORHY)]<-0
+#Auditory exostosis
+HIdata_new$AUDEX[is.na(HIdata_new$AUDEX)]<-0
+#Degenerative joint disease
+HIdata_new$DJSH[is.na(HIdata_new$DJSH)]<-0;HIdata_new$DJHK[is.na(HIdata_new$DJHK)]<-0
+HIdata_new$DJCER[is.na(HIdata_new$DJCER)]<-0;HIdata_new$DJTHO[is.na(HIdata_new$DJTHO)]<-0
+HIdata_new$DJLUM[is.na(HIdata_new$DJLUM)]<-0;HIdata_new$DJTMJ[is.na(HIdata_new$DJTMJ)]<-0
+HIdata_new$DJWR[is.na(HIdata_new$DJWR)]<-0;HIdata_new$DJHAN[is.na(HIdata_new$DJHAN)]<-0
+#Trauma
+HIdata_new$TRARM[is.na(HIdata_new$TRARM)]<-0;HIdata_new$TRLEG[is.na(HIdata_new$TRLEG)]<-0
+HIdata_new$TRNAS[is.na(HIdata_new$TRNAS)]<-0;HIdata_new$TRARM[is.na(HIdata_new$TRARM)]<-0
+HIdata_new$TRFAC[is.na(HIdata_new$TRFAC)]<-0;HIdata_new$TRSKUL[is.na(HIdata_new$TRSKUL)]<-0
+HIdata_new$TRHAN[is.na(HIdata_new$TRHAN)]<-0;HIdata_new$TRWEAP[is.na(HIdata_new$TRWEAP)]<-0
+#Infection
+HIdata_new$TIBINF[is.na(HIdata_new$TIBINF)]<-0
+```
+
+The only categorical variable in which zero isn't used to represent unavailable data is SKELINF. For this the coding is a follows.
+
+0. "no periosteal reaction on any other bone than the tibiae"
+
+1. "periosteal reaction on any other bone(s) than the tibiae not caused by trauma"
+
+2. "evidence of systemic infection involving any of the bones (including the tibiae) of the skeleton. This would include specific diseases which include (but are not limited to) tuberculosis and syphilis"
+
+It is odd that this coding doesn't match the general pattern. As such I will change the coding to the following:
+
+0. Unknown/un-recordable 
+
+1. "no periosteal reaction on any other bone than the tibiae"
+
+2. "periosteal reaction on any other bone(s) than the tibiae not caused by trauma"
+
+3. "evidence of systemic infection involving any of the bones (including the tibiae) of the skeleton. This would include specific diseases which include (but are not limited to) tuberculosis and syphilis"
+
+
+```{r}
+Fact2Num<- function(x){
+# function from HIBasicClean.R
+a<-as.character(x)
+a<-as.numeric(a)
+a
+}
+
+HIdata_new$SKELINF<-Fact2Num(HIdata_new$SKELINF)+1
+HIdata_new$SKELINF[is.na(HIdata_new$SKELINF)]<-0
+HIdata_new$SKELINF<-as.factor(HIdata_new$SKELINF)
+```
+
+#Review data
+
+```{r}
+kable(summary(HIdata_new[,3:9]))
+kable(summary(HIdata_new[,10:16]))
+kable(summary(HIdata_new[,17:25]))
+kable(summary(HIdata_new[,26:37]))
+kable(summary(HIdata_new[,38:45]))
+```
+
+
+#missing Sex and age data
+
+The summary above shows NAs in sex and age.  
+
+##Sex
+
+For sex there are two unknown categories (cat 5= unknown because juvenile, 6= undeterminable). If possible all NA should be put into one of these categories. 
+
+
+```{r}
+SexNA<-HIdata_new[is.na(HIdata_new$Sex),]
+kable(summary(SexNA[,4:7]))
+```
+
+All NA on Age so can't tell if cat. 5 or 6 (will leave). 
+
+##Age
+
+Age is needed for the health index calculation so need to see if age can be estimated when missing. 
+
+```{r}
+#706 Age NA's (need age for health index calculation)
+AgeNA<-HIdata_new[is.na(HIdata_new$Age),]
+kable(summary(AgeNA[,3:7]))
+```
+
+There are `r length(AgeNA$Age)` records without ages. None of these have MaxAge or DentalAge recorded but some do have MinAge. In the absence of anything better this could be a substitute for age. 
+
+```{r}
+Min2Age<-AgeNA[!(is.na(AgeNA$MinAge)),]
+kable(Min2Age[,2:7])
+```
+
+`r length(Min2Age$Age)` observations, all juvenile MinAge are cat 5 in sex, and the "adult" are not all 18+ (i.e. not just we know it adult but nothing better). so MinAge can be used as a sub for Age so these observations are useable.
+
+```{r}
+IDs<-Min2Age$cID
+HIdata_new$Age[HIdata_new$cID %in% IDs]<-HIdata_new$MinAge[HIdata_new$cID %in% IDs]
+```
+
+
+#Next step
+
+This concludes the correction of the Health Index data. The next stage of analysis (detailed in "HealthIndex.rmd") is reconstruction of process for creating the health index. 
+
+```{r}
+write.table(HIdata_new,"data/HIdata_c.txt",row.name=FALSE)
+```
